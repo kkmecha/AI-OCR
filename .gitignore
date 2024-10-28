@@ -4,6 +4,7 @@ data/**/*.inkml
 data/**/*.jsonl
 
 myenv/
+*.pdf
 
 # Pythonのキャッシュファイルを無視
 __pycache__/
