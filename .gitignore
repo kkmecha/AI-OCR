@@ -5,6 +5,7 @@ data/**/*.jsonl
 
 myenv/
 *.pdf
+*ipynb
 
 # Pythonのキャッシュファイルを無視
 __pycache__/
