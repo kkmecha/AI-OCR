@@ -2,6 +2,7 @@ import os
 import json
 from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -108,30 +109,29 @@ def process_inkml_files(input_dir, output_dir, json_file):
     with open(json_file, 'w') as f:
         json.dump(processed_files, f, indent=4)
 
-# CNNモデルの定義
+#  CNNモデルの定義
 class CNNModel(nn.Module):
-    def __init__(self, device):
+    def __init__(self, num_classes, device):
         super(CNNModel, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)  # グレースケール画像用
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.fc1 = nn.Linear(128 * 32 * 32, 256)  # 256x256の場合のサイズを更新
-        self.fc2 = nn.Linear(256, 10)  # クラス数に応じて調整
-        self.device = device  # デバイスを保存
+        self.fc2 = nn.Linear(256, num_classes)  # クラス数に応じて調整
+        self.device = device
 
     def forward(self, x):
-        x = x.to(self.device)  # デバイスに移動
+        x = x.to(self.device)
         x = torch.relu(self.conv1(x))
-        x = torch.max_pool2d(x, 2)
+        x = nn.MaxPool2d(2)(x)
         x = torch.relu(self.conv2(x))
-        x = torch.max_pool2d(x, 2)
+        x = nn.MaxPool2d(2)(x)
         x = torch.relu(self.conv3(x))
-        x = torch.max_pool2d(x, 2)
+        x = nn.MaxPool2d(2)(x)
         x = x.view(x.size(0), -1)
         x = torch.relu(self.fc1(x))
         x = self.fc2(x)
         return x
-
 
 # データセットクラス
 class HandwritingDataset(Dataset):
@@ -139,43 +139,65 @@ class HandwritingDataset(Dataset):
         self.data_dir = data_dir
         self.transform = transform
 
+        print("[Info] Loading labels from JSON file...")
         with open(json_file, 'r') as f:
             self.labels = json.load(f)
+        print(f"[Info] Successfully loaded {len(self.labels)} labels.")
 
-        # ラベルを取得して数値にエンコード
+        # ラベルを数値にエンコード
         self.label_encoder = LabelEncoder()
         self.all_labels = [item['label'] for item in self.labels]
         self.label_encoder.fit(self.all_labels)
-        self.labels_dict = {os.path.join(data_dir, item['filename']): self.label_encoder.transform([item['label']])[0] for item in self.labels}
-        self.image_paths = [os.path.join(data_dir, item['filename']) for item in self.labels]
+
+        # 画像とラベルの辞書を作成
+        self.labels_dict = {
+            os.path.join(data_dir, item['filename']): self.label_encoder.transform([item['label']])[0]
+            for item in self.labels
+        }
+        self.image_paths = list(self.labels_dict.keys())
+        
+        print(f"[Info] Number of unique labels: {len(set(self.all_labels))}")
+        print(f"[Info] Sample labels: {self.all_labels[:5]}")
+        print(f"[Info] Number of images found: {len(self.image_paths)}")
+        print(f"[Info] Sample image paths: {self.image_paths[:5]}")
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        with Image.open(img_path) as image:  # withステートメントで自動解放
-            image = image.convert('L')
-            label = self.labels_dict[img_path]
+        print(f"[Info] Accessing image: {img_path}")
 
-            if self.transform:
-                image = self.transform(image)
+        try:
+            with Image.open(img_path) as image:
+                image = image.convert('L')  # グレースケールに変換
+                label = self.labels_dict[img_path]  # ラベルを取得
 
+                if self.transform:
+                    image = self.transform(image)  # 前処理があれば適用
+        except Exception as e:
+            print(f"[Error] Failed to open image {img_path}: {e}")
+            raise  # エラーを再発生させて呼び出し元に伝える
+
+        print(f"[Info] Loaded image of size: {image.size}, with label: {label}")
         return image, label
+
 
 # 訓練と評価の関数
 def train_and_evaluate(data_dir, json_file, batch_size=32, epochs=10, learning_rate=0.001):
     device = check_gpu()
 
     transform = transforms.Compose([
-        transforms.Resize((256, 256)),  # 256x256に変更
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
     ])
 
     dataset = HandwritingDataset(data_dir, json_file, transform=transform)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
-    model = CNNModel(device).to(device)  # モデルをデバイスに移動
+    num_classes = len(dataset.label_encoder.classes_)
+    print(f"[Training] Number of classes: {num_classes}")
+    model = CNNModel(num_classes, device).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -186,6 +208,7 @@ def train_and_evaluate(data_dir, json_file, batch_size=32, epochs=10, learning_r
         total = 0
 
         for batch_idx, (images, labels) in enumerate(tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")):
+            images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -193,22 +216,51 @@ def train_and_evaluate(data_dir, json_file, batch_size=32, epochs=10, learning_r
             optimizer.step()
             running_loss += loss.item() * images.size(0)
 
-            # 精度を計算
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
             # バッチごとの損失と精度を表示
-            if (batch_idx + 1) % 10 == 0:  # 10バッチごとに出力
+            if (batch_idx + 1) % 10 == 0:
                 batch_loss = loss.item()
                 batch_accuracy = 100 * (predicted == labels).sum().item() / labels.size(0)
                 print(f"Batch {batch_idx + 1}/{len(dataloader)} - Loss: {batch_loss:.4f}, Accuracy: {batch_accuracy:.2f}%")
 
         epoch_loss = running_loss / len(dataloader.dataset)
-        accuracy = 100 * correct / total  # 正解率をパーセントに変換
+        accuracy = 100 * correct / total
         print(f"Epoch {epoch + 1}/{epochs} - Loss: {epoch_loss:.4f}, Accuracy: {accuracy:.2f}%")
 
     print("Training complete.")
+
+def load_dataset(data_dir, json_file):
+    # JSONファイルからラベルを読み込み
+    try:
+        with open(json_file, 'r') as f:
+            labels = json.load(f)
+    except Exception as e:
+        print(f"Error loading JSON: {e}")
+        return
+
+    print(f"[Info] Loaded {len(labels)} labels from JSON.")
+
+    # 画像パスとラベルのリストを作成
+    for item in labels:
+        img_path = os.path.join(data_dir, item['filename'])
+        print(f"[Info] Checking image: {img_path}")
+
+        # ラベルを表示
+        label = item['label']
+        print(f"[Info] Corresponding label: {label}")
+
+        # 画像を開いて確認
+        if os.path.exists(img_path):
+            try:
+                with Image.open(img_path) as img:
+                    print(f"[Info] Successfully opened image: {img_path}, Size: {img.size}")
+            except Exception as e:
+                print(f"[Error] Could not open image {img_path}: {e}")
+        else:
+            print(f"[Warning] Image does not exist: {img_path}")
 
 if __name__ == "__main__":
     # input_dirs = ['/home/kenshin/Desktop/Application/data/train', '/home/kenshin/Desktop/Application/data/valid', '/home/kenshin/Desktop/Application/data/test']
@@ -221,8 +273,18 @@ if __name__ == "__main__":
     # process_image_for_model('/home/kenshin/Desktop/Application/data/test_grayscales/0a0b310001bedb73.png')
 
     # CNNモデルの訓練
-    data_dirs = ['/home/kenshin/Desktop/Application/data/train_grayscales', '/home/kenshin/Desktop/Application/data/valid_grayscales']
-    json_files = ['/home/kenshin/Desktop/Application/data/train_labels.json', '/home/kenshin/Desktop/Application/data/valid_labels.json']
+    # data_dirs = ['/home/kenshin/Desktop/Application/data/train_grayscales_re_png', '/home/kenshin/Desktop/Application/data/valid_grayscales_re_png']
+    # json_files = ['/home/kenshin/Desktop/Application/data/train_labels.json', '/home/kenshin/Desktop/Application/data/valid_labels.json']
 
-    for data_dir, json_file in zip(data_dirs, json_files):
-        train_and_evaluate(data_dir, json_file)
+    # for data_dir, json_file in zip(data_dirs, json_files):
+    #     train_and_evaluate(data_dir, json_file)
+
+
+
+
+
+    data_dir = '/home/kenshin/Desktop/Application/data/train_grayscales_re_png'
+    json_file = '/home/kenshin/Desktop/Application/data/train_labels.json'
+
+    dataset = HandwritingDataset(data_dir, json_file)
+

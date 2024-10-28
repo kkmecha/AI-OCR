@@ -42,4 +42,4 @@ input_dirs = [
     '/home/kenshin/Desktop/Application/data/valid_grayscales',
     '/home/kenshin/Desktop/Application/data/test_grayscales'
 ]
-resize_images_in_directories(input_dirs, target_size=(256, 256))  # 任意のサイズを指定
+resize_images_in_directories(input_dirs, target_size=(128, 128))  # 任意のサイズを指定
