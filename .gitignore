@@ -1,0 +1,9 @@
+# データファイルを無視
+data/**/*.png
+data/**/*.inkml
+data/**/*.jsonl
+
+myenv/
+
+# Pythonのキャッシュファイルを無視
+__pycache__/
